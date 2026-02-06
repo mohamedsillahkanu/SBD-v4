@@ -25,6 +25,167 @@ const state = {
 };
 
 let LOCATION_DATA = {};
+let deferredPrompt = null;
+
+// ============================================
+// PWA SERVICE WORKER REGISTRATION
+// ============================================
+if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js')
+            .then((registration) => {
+                console.log('[PWA] Service Worker registered:', registration.scope);
+                
+                // Check for updates
+                registration.addEventListener('updatefound', () => {
+                    const newWorker = registration.installing;
+                    newWorker.addEventListener('statechange', () => {
+                        if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                            // New version available
+                            console.log('[PWA] New version available');
+                            showNotification('New version available! Refresh to update.', 'info');
+                        }
+                    });
+                });
+            })
+            .catch((error) => {
+                console.error('[PWA] Service Worker registration failed:', error);
+            });
+    });
+}
+
+// ============================================
+// PWA INSTALL PROMPT
+// ============================================
+window.addEventListener('beforeinstallprompt', (e) => {
+    console.log('[PWA] beforeinstallprompt fired');
+    e.preventDefault();
+    deferredPrompt = e;
+    showInstallBanner();
+});
+
+window.addEventListener('appinstalled', () => {
+    console.log('[PWA] App installed');
+    hideInstallBanner();
+    deferredPrompt = null;
+    showNotification('App installed successfully!', 'success');
+});
+
+function showInstallBanner() {
+    const banner = document.getElementById('installBanner');
+    if (banner && deferredPrompt) {
+        banner.style.display = 'block';
+        document.body.classList.add('install-banner-visible');
+    }
+}
+
+function hideInstallBanner() {
+    const banner = document.getElementById('installBanner');
+    if (banner) {
+        banner.style.display = 'none';
+        document.body.classList.remove('install-banner-visible');
+    }
+}
+
+function setupInstallButton() {
+    const installBtn = document.getElementById('installBtn');
+    const closeBtn = document.getElementById('installClose');
+    
+    if (installBtn) {
+        installBtn.addEventListener('click', async () => {
+            if (!deferredPrompt) {
+                console.log('[PWA] No deferred prompt available');
+                return;
+            }
+            
+            // Show the install prompt
+            deferredPrompt.prompt();
+            
+            // Wait for user response
+            const { outcome } = await deferredPrompt.userChoice;
+            console.log('[PWA] User choice:', outcome);
+            
+            if (outcome === 'accepted') {
+                hideInstallBanner();
+            }
+            
+            deferredPrompt = null;
+        });
+    }
+    
+    if (closeBtn) {
+        closeBtn.addEventListener('click', () => {
+            hideInstallBanner();
+            // Store preference to not show again this session
+            sessionStorage.setItem('installBannerDismissed', 'true');
+        });
+    }
+    
+    // Check if already dismissed this session
+    if (sessionStorage.getItem('installBannerDismissed') === 'true') {
+        hideInstallBanner();
+    }
+}
+
+// ============================================
+// APP UPDATE FUNCTION
+// ============================================
+async function updateApp() {
+    const updateBtn = document.getElementById('updateAppBtn');
+    const btnIcon = updateBtn.querySelector('.btn-icon');
+    
+    // Show updating state
+    updateBtn.disabled = true;
+    btnIcon.style.animation = 'spin 1s linear infinite';
+    updateBtn.innerHTML = `
+        <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="animation: spin 1s linear infinite;">
+            <path d="M21 2v6h-6M3 12a9 9 0 0115.36-6.36L21 8M3 22v-6h6M21 12a9 9 0 01-15.36 6.36L3 16"/>
+        </svg>
+        UPDATING...
+    `;
+    
+    showNotification('Checking for updates...', 'info');
+    
+    try {
+        // Unregister existing service worker
+        if ('serviceWorker' in navigator) {
+            const registrations = await navigator.serviceWorker.getRegistrations();
+            for (const registration of registrations) {
+                await registration.unregister();
+                console.log('[Update] Service Worker unregistered');
+            }
+        }
+        
+        // Clear all caches
+        if ('caches' in window) {
+            const cacheNames = await caches.keys();
+            for (const cacheName of cacheNames) {
+                await caches.delete(cacheName);
+                console.log('[Update] Cache deleted:', cacheName);
+            }
+        }
+        
+        showNotification('Update complete! Reloading...', 'success');
+        
+        // Wait a moment then reload
+        setTimeout(() => {
+            window.location.reload(true);
+        }, 1000);
+        
+    } catch (error) {
+        console.error('[Update] Error:', error);
+        showNotification('Update failed. Please try again.', 'error');
+        
+        // Reset button
+        updateBtn.disabled = false;
+        updateBtn.innerHTML = `
+            <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 2v6h-6M3 12a9 9 0 0115.36-6.36L21 8M3 22v-6h6M21 12a9 9 0 01-15.36 6.36L3 16"/>
+            </svg>
+            UPDATE
+        `;
+    }
+}
 
 // ============================================
 // INITIALIZATION
@@ -34,6 +195,7 @@ async function init() {
     updateOnlineStatus();
     updateCounts();
     setupEventListeners();
+    setupInstallButton();
     
     try {
         await loadLocationData();
@@ -1270,6 +1432,10 @@ async function handleSubmit(e) {
     const formData = new FormData(e.target);
     const data = { timestamp: new Date().toISOString() };
     for (const [k, v] of formData.entries()) data[k] = v;
+    
+    // Explicitly include checkbox states (FormData doesn't include unchecked checkboxes)
+    data.itn_type_pbo = document.getElementById('itn_type_pbo').checked ? 'Yes' : 'No';
+    data.itn_type_ig2 = document.getElementById('itn_type_ig2').checked ? 'Yes' : 'No';
 
     const submitBtn = document.getElementById('submitBtn');
     submitBtn.disabled = true;
